@@ -1,204 +1,70 @@
+from gtts import gTTS
 import streamlit as st
-from dotenv import load_dotenv
-import os
-from openai import OpenAI
+from tutor_chat import render_tutor_chat
+from quiz_generator import render_quiz
+from flashcards import render_flashcard_page
+from dashboard import render_dashboard
+from utils.auth import get_student_name
 
-# ---------------------------
-# Load API Key
-# ---------------------------
-load_dotenv()
-API_KEY = os.getenv("NVIDIA_API_KEY")
+def voice_tutor(last_answer: str):
+    st.subheader("🔊 Voice Tutor (beta)")
+    if not last_answer:
+        st.info("Ask a question in Tutor Chat or Homework Solver first to generate audio.")
+        return
+    if st.button("Generate audio for last answer"):
+        tts = gTTS(text=last_answer, lang="en")
+        audio_bytes = tts_to_bytes(tts)
+        st.audio(audio_bytes, format="audio/mp3")
 
-client = OpenAI(
-    base_url="https://integrate.api.nvidia.com/v1",
-    api_key=API_KEY
-)
+def tts_to_bytes(tts_obj):
+    import io
+    buf = io.BytesIO()
+    tts_obj.write_to_fp(buf)
+    buf.seek(0)
+    return buf.getvalue()
 
-# ---------------------------
-# Streamlit Setup
-# ---------------------------
-st.set_page_config(page_title="High School Tutor", layout="wide")
-st.title("🎓 High School Tutor – NVIDIA‑Powered Learning Assistant")
-st.write("A school-ready app for tutoring, quizzes, and flashcards across high school subjects.")
+def main():
+    subject = st.sidebar.selectbox(
+        "📚 Subject",
+        [
+            "General",
+            "Mathematics",
+            "Physics",
+            "Chemistry",
+            "Biology",
+            "English",
+            "History",
+            "Economics",
+            "Computer Science"
+        ]
+    )
+    step_by_step = st.sidebar.checkbox("✅ Step-by-step explanations", value=True)
+    student_name = get_student_name()
 
-# ---------------------------
-# Sidebar Controls
-# ---------------------------
-st.sidebar.header("Settings")
-
-subject = st.sidebar.selectbox(
-    "Subject",
-    [
-        "General",
-        "Mathematics",
-        "Physics",
-        "Chemistry",
-        "Biology",
-        "English",
-        "History",
-        "Economics",
-        "Computer Science"
-    ]
-)
-
-step_by_step = st.sidebar.checkbox("Step-by-step explanations", value=True)
-
-mode = st.sidebar.radio(
-    "Mode",
-    ["Tutor Chat", "Quiz Generator", "Flashcard Generator"]
-)
-
-# ---------------------------
-# Build System Prompt
-# ---------------------------
-def build_system_prompt():
-    prompt = "You are a friendly high school tutor. Explain concepts clearly and simply."
-
-    if subject != "General":
-        prompt += f" Focus on {subject}."
-
-    if step_by_step:
-        prompt += " Use step-by-step explanations."
-
-    if mode == "Quiz Generator":
-        prompt += " Generate multiple-choice quizzes with correct answers and explanations."
-
-    if mode == "Flashcard Generator":
-        prompt += " Generate flashcards in Term–Definition or Question–Answer format."
-
-    return {"role": "system", "content": prompt}
-
-
-# ---------------------------
-# Streaming Helper (FIXED)
-# ---------------------------
-def stream_nvidia_response(messages):
-    """
-    FIXED streaming:
-    - Buffers partial tokens
-    - Only outputs complete lines
-    - Prevents token-by-token garbage output
-    """
-    buffer = ""
-    completion = client.chat.completions.create(
-        model="nvidia/nemotron-3.5-lightning-30b-a3b",
-        messages=messages,
-        temperature=0.6,
-        top_p=0.9,
-        max_tokens=2048,
-        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-        stream=True
+    mode = st.sidebar.radio(
+        "🧭 Mode",
+        ["Tutor Chat", "Homework Solver", "Quiz Generator", "Flashcard Generator", "Dashboard", "Voice Tutor (beta)"]
     )
 
-    for chunk in completion:
-        if not hasattr(chunk, "choices"):
-            continue
-        if not chunk.choices:
-            continue
+    if mode in ["Tutor Chat", "Homework Solver"]:
+        render_tutor_chat(subject, step_by_step, mode, student_name)
+    elif mode == "Quiz Generator":
+        render_quiz(subject, step_by_step)
+    elif mode == "Flashcard Generator":
+        render_flashcard_page(subject)
+    elif mode == "Dashboard":
+        render_dashboard(student_name)
+    elif mode == "Voice Tutor (beta)":
+        # Use last assistant answer from Tutor Chat / Homework Solver
+        last_answer = None
+        for key in st.session_state:
+            if key.startswith("chat_history_"):
+                history = st.session_state[key]
+                for msg in reversed(history):
+                    if msg["role"] == "assistant":
+                        last_answer = msg["content"]
+                        break
+        voice_tutor(last_answer)
 
-        delta = chunk.choices[0].delta
-        if not delta or delta.content is None:
-            continue
-
-        buffer += delta.content
-
-        # Only yield when we have a full line or paragraph
-        if buffer.endswith("\n") or buffer.endswith(".") or buffer.endswith(":"):
-            yield buffer
-            buffer = ""
-
-    # Yield any remaining text
-    if buffer.strip():
-        yield buffer
-
-# ---------------------------
-# Tutor Chat Mode
-# ---------------------------
-if mode == "Tutor Chat":
-    st.subheader("Tutor Chat")
-
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = [build_system_prompt()]
-
-    # Display history
-    for msg in st.session_state.chat_history:
-        if msg["role"] != "system":
-            with st.chat_message(msg["role"]):
-                st.write(msg["content"])
-
-    user_input = st.chat_input("Ask your question...")
-
-    if user_input:
-        st.session_state.chat_history.append({"role": "user", "content": user_input})
-
-        with st.chat_message("assistant"):
-            placeholder = st.empty()
-            full = ""
-
-            for partial in stream_nvidia_response(st.session_state.chat_history):
-                full = partial
-                placeholder.write(full)
-
-            st.session_state.chat_history.append({"role": "assistant", "content": full})
-
-
-# ---------------------------
-# Quiz Generator Mode
-# ---------------------------
-elif mode == "Quiz Generator":
-    st.subheader("Quiz Generator")
-
-    topic = st.text_input("Topic")
-    num_questions = st.slider("Number of questions", 3, 15, 5)
-
-    if st.button("Generate Quiz"):
-        if not topic.strip():
-            st.warning("Please enter a topic.")
-        else:
-            messages = [
-                build_system_prompt(),
-                {
-                    "role": "user",
-                    "content": (
-                        f"Create a {num_questions}-question multiple-choice quiz "
-                        f"on: {topic}. Include correct answers and explanations."
-                    )
-                }
-            ]
-
-            with st.spinner("Generating quiz..."):
-                full = ""
-                for partial in stream_nvidia_response(messages):
-                    full = partial
-                    st.markdown(full)
-
-
-# ---------------------------
-# Flashcard Generator Mode
-# ---------------------------
-elif mode == "Flashcard Generator":
-    st.subheader("Flashcard Generator")
-
-    topic = st.text_input("Topic")
-    num_cards = st.slider("Number of flashcards", 5, 30, 10)
-
-    if st.button("Generate Flashcards"):
-        if not topic.strip():
-            st.warning("Please enter a topic.")
-        else:
-            messages = [
-                build_system_prompt(),
-                {
-                    "role": "user",
-                    "content": (
-                        f"Create {num_cards} flashcards for: {topic}. "
-                        "Use Term–Definition or Question–Answer format."
-                    )
-                }
-            ]
-
-            with st.spinner("Generating flashcards..."):
-                full = ""
-                for partial in stream_nvidia_response(messages):
-                    full = partial
-                    st.markdown(full)
+if __name__ == "__main__":
+    main()

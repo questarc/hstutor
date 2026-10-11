@@ -74,13 +74,12 @@ def build_system_prompt():
 # ---------------------------
 def stream_nvidia_response(messages):
     """
-    FIXED streaming function:
-    - Handles empty chunks
-    - Handles missing choices
-    - Streams reliably
+    FIXED streaming:
+    - Buffers partial tokens
+    - Only outputs complete lines
+    - Prevents token-by-token garbage output
     """
-    response_text = ""
-
+    buffer = ""
     completion = client.chat.completions.create(
         model="nvidia/nemotron-3.5-lightning-30b-a3b",
         messages=messages,
@@ -98,14 +97,19 @@ def stream_nvidia_response(messages):
             continue
 
         delta = chunk.choices[0].delta
-        if not delta:
+        if not delta or delta.content is None:
             continue
 
-        content_piece = delta.content
-        if content_piece:
-            response_text += content_piece
-            yield response_text
+        buffer += delta.content
 
+        # Only yield when we have a full line or paragraph
+        if buffer.endswith("\n") or buffer.endswith(".") or buffer.endswith(":"):
+            yield buffer
+            buffer = ""
+
+    # Yield any remaining text
+    if buffer.strip():
+        yield buffer
 
 # ---------------------------
 # Tutor Chat Mode
